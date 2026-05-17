@@ -3,31 +3,21 @@
 set -euo pipefail
 
 # ==========================================================
-# Chloroplast Genome Metadata + Full Taxonomy Retrieval
+# Angiosperm Chloroplast Genome + Full Taxonomy Pipeline
+# With Quality Filtering (Publication-grade plastomes only)
 #
-# Retrieves:
-#   - accession
-#   - genome size
-#   - publication year
-#   - taxonomy ID
-#   - kingdom
-#   - phylum
-#   - class
-#   - order
-#   - family
-#   - genus
-#   - species
-#   - title
+# Filters:
+#   - Angiosperms only (txid3398)
+#   - Chloroplast genomes only
+#   - Complete genomes only
+#   - Size: 120–180 kb
+#   - Removes partial/fragment/draft
 #
 # Output:
 #   chloroplast_metadata_full_taxonomy.csv
-#
-# No GenBank flat files downloaded
-# Uses only NCBI E-utilities
 # ==========================================================
 
 OUTDIR="chloroplast_taxonomy_dataset"
-
 mkdir -p "$OUTDIR"
 
 SEARCH_JSON="$OUTDIR/search.json"
@@ -36,16 +26,18 @@ TAX_XML="$OUTDIR/taxonomy.xml"
 
 CSV="$OUTDIR/chloroplast_metadata_full_taxonomy.csv"
 
-QUERY="(chloroplast[All Fields] AND genome[All Fields]) AND chloroplast[filter]"
+# ----------------------------------------------------------
+# QUERY: Angiosperms + chloroplast
+# ----------------------------------------------------------
+QUERY="txid3398[Organism:exp] AND chloroplast[filter]"
 
 echo "======================================"
-echo "Searching NCBI chloroplast genomes"
+echo "Searching Angiosperm chloroplast genomes"
 echo "======================================"
 
 # ----------------------------------------------------------
-# STEP 1: Search nucleotide database
+# STEP 1: Search NCBI
 # ----------------------------------------------------------
-
 curl -s "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi" \
     -d "db=nucleotide" \
     -d "term=$QUERY" \
@@ -58,7 +50,6 @@ echo "Search complete"
 # ----------------------------------------------------------
 # STEP 2: Extract IDs
 # ----------------------------------------------------------
-
 IDS=$(python3 - <<EOF
 import json
 data=json.load(open("$SEARCH_JSON"))
@@ -76,15 +67,13 @@ EOF
 echo "Total records found: $TOTAL"
 
 # ----------------------------------------------------------
-# STEP 3: Download nucleotide summaries
+# STEP 3: Download summaries
 # ----------------------------------------------------------
-
 echo "Downloading nucleotide summaries..."
 
 > "$SUMMARY_XML"
 
 BATCH=500
-
 IFS=',' read -ra ARR <<< "$IDS"
 
 for ((i=0; i<${#ARR[@]}; i+=BATCH)); do
@@ -97,15 +86,14 @@ for ((i=0; i<${#ARR[@]}; i+=BATCH)); do
         -d "retmode=xml" \
         >> "$SUMMARY_XML"
 
-    echo "Processed nucleotide batch starting at $i"
+    echo "Processed batch starting at $i"
 
-    sleep 0.34
+    sleep 0.3
 done
 
 # ----------------------------------------------------------
-# STEP 4: Extract unique taxonomy IDs
+# STEP 4: Extract taxonomy IDs
 # ----------------------------------------------------------
-
 echo "Extracting taxonomy IDs..."
 
 python3 - <<EOF
@@ -114,10 +102,7 @@ import re
 xml = open("$SUMMARY_XML").read()
 
 taxids = set(
-    re.findall(
-        r'<Item Name="TaxId" Type="Integer">(\d+)</Item>',
-        xml
-    )
+    re.findall(r'<Item Name="TaxId" Type="Integer">(\d+)</Item>', xml)
 )
 
 with open("$OUTDIR/taxids.txt", "w") as f:
@@ -128,9 +113,8 @@ print("Unique taxonomy IDs:", len(taxids))
 EOF
 
 # ----------------------------------------------------------
-# STEP 5: Download taxonomy metadata
+# STEP 5: Download taxonomy
 # ----------------------------------------------------------
-
 echo "Downloading taxonomy records..."
 
 > "$TAX_XML"
@@ -151,23 +135,47 @@ for ((i=0; i<${#TAXIDS[@]}; i+=TBATCH)); do
 
     echo "Processed taxonomy batch starting at $i"
 
-    sleep 0.34
+    sleep 0.3
 done
 
 # ----------------------------------------------------------
-# STEP 6: Parse everything into CSV
+# STEP 6: Parse + QC FILTER + CSV
 # ----------------------------------------------------------
-
-echo "Parsing metadata and taxonomy..."
+echo "Parsing metadata and applying quality filters..."
 
 python3 - <<EOF
 import re
 import csv
 
-# ------------------------------------------------------
-# Parse taxonomy XML
-# ------------------------------------------------------
+# -----------------------------
+# QUALITY FILTER FUNCTION
+# -----------------------------
+def is_good_plastome(length, title):
+    try:
+        length = int(length)
+    except:
+        return False
 
+    title = title.lower()
+
+    # size filter (core plastome range)
+    if length < 120000 or length > 180000:
+        return False
+
+    # must be complete genome
+    if "complete genome" not in title:
+        return False
+
+    # remove bad assemblies
+    bad = ["partial", "fragment", "draft", "segment"]
+    if any(b in title for b in bad):
+        return False
+
+    return True
+
+# -----------------------------
+# PARSE TAXONOMY
+# -----------------------------
 tax_xml = open("$TAX_XML").read()
 
 tax_records = re.findall(r"<Taxon>(.*?)</Taxon>", tax_xml, re.S)
@@ -183,7 +191,6 @@ for rec in tax_records:
         continue
 
     taxid = taxid_match.group(1)
-    species = sci_match.group(1) if sci_match else "NA"
 
     ranks = {
         "kingdom": "NA",
@@ -204,38 +211,32 @@ for rec in tax_records:
         if rank in ranks:
             ranks[rank] = name
 
-    taxonomy[taxid] = {
-        "species": species,
-        **ranks
-    }
+    taxonomy[taxid] = ranks
 
-# ------------------------------------------------------
-# Parse nucleotide summaries
-# ------------------------------------------------------
-
+# -----------------------------
+# PARSE NUCLEOTIDE SUMMARY
+# -----------------------------
 summary_xml = open("$SUMMARY_XML").read()
 
 docs = re.findall(r"<DocSum>(.*?)</DocSum>", summary_xml, re.S)
 
 rows = []
 
+def extract(name, block):
+    m = re.search(rf'<Item Name="{name}" Type="[^"]+">(.*?)</Item>', block, re.S)
+    return m.group(1).strip() if m else "NA"
+
 for d in docs:
 
-    def extract(name):
-        m = re.search(
-            rf'<Item Name="{name}" Type="[^"]+">(.*?)</Item>',
-            d,
-            re.S
-        )
-        return m.group(1).strip() if m else "NA"
+    accession = extract("Caption", d)
+    title = extract("Title", d)
+    taxid = extract("TaxId", d)
+    length = extract("Length", d)
+    year = extract("CreateDate", d)[:4]
 
-    accession = extract("Caption")
-    title = extract("Title")
-    taxid = extract("TaxId")
-    length = extract("Length")
-
-    create_date = extract("CreateDate")
-    year = create_date[:4] if create_date != "NA" else "NA"
+    # APPLY QUALITY FILTER
+    if not is_good_plastome(length, title):
+        continue
 
     tx = taxonomy.get(taxid, {})
 
@@ -244,22 +245,22 @@ for d in docs:
         length,
         year,
         taxid,
-        tx.get("kingdom", "NA"),
-        tx.get("phylum", "NA"),
-        tx.get("class", "NA"),
-        tx.get("order", "NA"),
-        tx.get("family", "NA"),
-        tx.get("genus", "NA"),
-        tx.get("species", "NA"),
+        tx.get("kingdom","NA"),
+        tx.get("phylum","NA"),
+        tx.get("class","NA"),
+        tx.get("order","NA"),
+        tx.get("family","NA"),
+        tx.get("genus","NA"),
+        tx.get("species","NA") if "species" in tx else "NA",
         title
     ])
 
-# ------------------------------------------------------
-# Write CSV
-# ------------------------------------------------------
+# -----------------------------
+# WRITE CSV
+# -----------------------------
+out = "$CSV"
 
-with open("$CSV", "w", newline="") as f:
-
+with open(out, "w", newline="") as f:
     writer = csv.writer(f)
 
     writer.writerow([
@@ -280,12 +281,12 @@ with open("$CSV", "w", newline="") as f:
     writer.writerows(rows)
 
 print("DONE")
-print("Records written:", len(rows))
-print("CSV:", "$CSV")
+print("High-quality plastomes retained:", len(rows))
+print("CSV:", out)
 EOF
 
 echo "======================================"
-echo "FINISHED"
+echo "FINISHED CLEAN PLASTOME DATASET"
 echo "Output:"
 echo "$CSV"
 echo "======================================"
