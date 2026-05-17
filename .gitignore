@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+
+# Conda
+.env
+.conda
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data
+data/
+results/
+logs/
+
+# Large sequence files
+*.gb
+*.fasta
+*.fa
+*.fastq
+*.fq
+*.gz
+*.zip
+
+# Temporary files
+tmp/
+temp/
