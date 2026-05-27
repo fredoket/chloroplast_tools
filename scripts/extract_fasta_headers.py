@@ -5,7 +5,7 @@ from Bio import SeqIO
 import csv
 
 # Directory containing FASTA files
-fasta_dir = Path("/home/foketch/genome_assembly/chloroplast_tools/data/angio_fasta/angio_fasta_c")
+fasta_dir = Path("/home/foketch/genome_assembly/chloroplast_tools/data/angio_fasta_c")
 
 # Output CSV file
 output_csv = fasta_dir / "fasta_header_names.csv"
