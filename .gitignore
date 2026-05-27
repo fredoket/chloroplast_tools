@@ -27,3 +27,11 @@ logs/
 tmp/
 temp/
 chloroplast_taxonomy_dataset/
+
+cgas/
+genome_list.txt
+module2_annotations/
+references/
+test_pga_run/
+tools/
+genome_sizes.csv
